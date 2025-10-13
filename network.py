@@ -63,6 +63,10 @@ def myNetwork():
                          range=50, txpower=15)
     sta6 = net.addStation('sta6', ip='10.0.0.6', position='400.0,400.0,0',
                          range=50, txpower=15)
+    sta7 = net.addStation('sta7', ip='10.0.0.7', position='700.0,200.0,0',
+                         range=50, txpower=15)
+    sta8 = net.addStation('sta8', ip='10.0.0.8', position='300.0,400.0,0',
+                         range=50, txpower=15)
     info("*** Configuring Propagation Model\n")
     net.setPropagationModel(model="logNormalShadowing", exp=3, variance=5)
 
@@ -83,31 +87,8 @@ def myNetwork():
     net.addLink(ap5, ap4)
     net.addLink(ap2, ap4)
 
-    info('*** Associating stations to access points\n')
     
-    # Calculer les distances et associer chaque station au AP le plus proche
-    stations = [sta1, sta2, sta3, sta4, sta5, sta5]
-    aps = [ap1, ap2, ap3, ap4, ap5, ap6, ap7, ap8]
     
-    def distance(pos1, pos2):
-        x1, y1 = float(pos1.split(',')[0]), float(pos1.split(',')[1])
-        x2, y2 = float(pos2.split(',')[0]), float(pos2.split(',')[1])
-        return ((x1-x2)**2 + (y1-y2)**2)**0.5
-    
-    # Association manuelle optimisée
-    associations = [
-        (sta1, ap1),  # sta1 proche de ap1
-        (sta2, ap1),  # sta2 proche de ap1  
-        (sta3, ap3),  # sta3 proche de ap3
-        (sta4, ap7),  # sta4 proche de ap7
-        (sta5, ap8),  # sta5 proche de ap8
-        (sta6, ap5),  # sta5 proche de ap5
-    ]
-    
-    for sta, ap in associations:
-        info(f'*** Associating {sta.name} to {ap.name}\n')
-        net.addLink(sta, ap)
-
     # Affichage du graphe
     net.plotGraph(max_x=850, max_y=600)
 
