@@ -87,48 +87,6 @@ class RoutingTable:
         """Vérifier si la table est pleine"""
         return len(self.rules) >= self.max_size
     
-    def compress_by_source(self):
-        """Compression par agrégation source (technique 1)"""
-        compressed_rules = []
-        source_ports = defaultdict(list)
-        
-        # Grouper les règles par source
-        for rule in self.rules:
-            if not rule.is_wildcard_src:
-                source_ports[rule.src].append(rule.out_port)
-        
-        # Pour chaque source, trouver le port le plus fréquent
-        for src, ports in source_ports.items():
-            if len(ports) > 1:  # Compression possible
-                port_counter = Counter(ports)
-                most_common_port = port_counter.most_common(1)[0][0]
-                
-                # Ajouter règle wildcard pour cette source
-                compressed_rules.append(FlowRule(src, '*', most_common_port, priority=2))
-                
-                # Garder les règles spécifiques pour les autres ports
-                for rule in self.rules:
-                    if rule.src == src and rule.out_port != most_common_port:
-                        compressed_rules.append(FlowRule(rule.src, rule.dst, rule.out_port, priority=3))
-            else:
-                # Garder les règles originales si pas de compression possible
-                for rule in self.rules:
-                    if rule.src == src:
-                        compressed_rules.append(rule)
-        
-        # Ajouter les autres règles (wildcards existants, etc.)
-        for rule in self.rules:
-            if rule.is_wildcard_src or rule.src not in source_ports:
-                compressed_rules.append(rule)
-
-        # Nettoyer les doublons exacts
-        unique = {}
-        for r in compressed_rules:
-            key = (r.src, r.dst, r.out_port)
-            if key not in unique:  
-                unique[key] = r
-        return list(unique.values())
-    
     def compress_by_destination(self):
         """Compression par agrégation destination (technique 2)"""
         compressed_rules = []
@@ -171,61 +129,21 @@ class RoutingTable:
                 unique[key] = r
         return list(unique.values())
 
-
-    def compress_by_default(self):
-        """Compression par règle par défaut (technique 3)"""
-        compressed_rules = []
-        all_ports = [rule.out_port for rule in self.rules]
-        
-        if all_ports:
-            # Trouver le port le plus fréquent
-            port_counter = Counter(all_ports)
-            default_port = port_counter.most_common(1)[0][0]
-            
-            # Ajouter règle par défaut
-            compressed_rules.append(FlowRule('*', '*', default_port, priority=1))
-            
-            # Garder seulement les règles avec des ports différents
-            for rule in self.rules:
-                if rule.out_port != default_port:
-                    compressed_rules.append(FlowRule(rule.src, rule.dst, rule.out_port, priority=2))
-        
-        # Nettoyer les doublons exacts
-        unique = {}
-        for r in compressed_rules:
-            key = (r.src, r.dst, r.out_port)
-            if key not in unique:  
-                unique[key] = r
-        return list(unique.values())
-
-
     def minnie_compress(self):
-        """Appliquer la compression MINNIE (choisir la meilleure des 3 techniques)"""
-        # Tester les 3 techniques
-        compressed_by_src = self.compress_by_source()
+        """Appliquer uniquement la compression MINNIE par destination"""
         compressed_by_dst = self.compress_by_destination()
-        compressed_by_default = self.compress_by_default()
         
-        # Choisir la plus petite table
-        options = [
-            (compressed_by_src, "source"),
-            (compressed_by_dst, "destination"), 
-            (compressed_by_default, "default")
-        ]
-        
-        best_compression = min(options, key=lambda x: len(x[0]))
-        best_rules, compression_type = best_compression
-        
-        self.rules = best_rules
+        # On applique le résultat de la compression par destination
+        self.rules = compressed_by_dst
         self.compression_count += 1
         
-        return len(best_rules), compression_type
+        return len(compressed_by_dst)
 
-class MinnieController(app_manager.RyuApp):
+class WcnController(app_manager.RyuApp):
     OFP_VERSIONS = [ofproto_v1_3.OFP_VERSION]
  
     def __init__(self, *args, **kwargs):
-        super(MinnieController, self).__init__(*args, **kwargs)
+        super(WcnController, self).__init__(*args, **kwargs)
         self.topology_api_app = self
         self.net = nx.DiGraph()
         self.nodes = {}
@@ -294,17 +212,17 @@ class MinnieController(app_manager.RyuApp):
         compressed_table = self.routing_tables[dpid]         # Table compressée
 
         # Compression basée sur le nombre de règles
-        if len(original_table.rules) >= 100:
+        if len(original_table.rules) >= 13:
             old_size = len(compressed_table.rules)
             # On vide la table compressée avant d'insérer les nouvelles règles
             compressed_table.rules = []
             # Copier toutes les règles originales dans la table compressée
             compressed_table.rules = original_table.rules.copy()
             # Appliquer la compression MINNIE sur les règles copiées
-            new_size, compression_type = compressed_table.minnie_compress()
+            new_size = compressed_table.minnie_compress()
             self.logger.info(
-                "COMPRESSION DÉCLENCHÉE - DPID=%s: %d -> %d règles, type=%s, gain=%d règles",
-                dpid, old_size, new_size, compression_type, old_size - new_size
+                "COMPRESSION DÉCLENCHÉE - DPID=%s: %d -> %d règles, gain=%d règles",
+                dpid, old_size, new_size, old_size - new_size
             )
             
             # Réinstaller les règles compressées sur le switch
