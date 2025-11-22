@@ -67,6 +67,20 @@ def myNetwork():
                          range=50, txpower=15)
     sta8 = net.addStation('sta8', ip='10.0.0.8', position='300.0,400.0,0',
                          range=50, txpower=15)
+    sta9  = net.addStation('sta9',  ip='10.0.0.9',  position='280.0,150.0,0', range=50, txpower=15)
+    sta10 = net.addStation('sta10', ip='10.0.0.10', position='500.0,300.0,0', range=50, txpower=15)
+    sta11 = net.addStation('sta11', ip='10.0.0.11', position='650.0,300.0,0', range=50, txpower=15)
+    sta12 = net.addStation('sta12', ip='10.0.0.12', position='50.0,300.0,0', range=50, txpower=15)
+    sta13 = net.addStation('sta13', ip='10.0.0.13', position='500.0,50.0,0', range=50, txpower=15)
+    sta14 = net.addStation('sta14', ip='10.0.0.14', position='650.0,500.0,0', range=50, txpower=15)
+    sta15 = net.addStation('sta15', ip='10.0.0.15', position='350.0,50.0,0', range=50, txpower=15)
+
+    sta16 = net.addStation('sta16', ip='10.0.0.16', position='50.0,150.0,0', range=50, txpower=15)
+    sta17 = net.addStation('sta17', ip='10.0.0.17', position='500.0,150.0,0', range=50, txpower=15)
+    sta18 = net.addStation('sta18', ip='10.0.0.18', position='500.0,400.0,0', range=50, txpower=15)
+    sta19 = net.addStation('sta19', ip='10.0.0.19', position='750.0,350.0,0', range=50, txpower=15)
+    sta20 = net.addStation('sta20', ip='10.0.0.20', position='770.0,167.0,0', range=50, txpower=15)
+
     info("*** Configuring Propagation Model\n")
     net.setPropagationModel(model="logNormalShadowing", exp=3, variance=5)
 
@@ -87,6 +101,41 @@ def myNetwork():
     net.addLink(ap5, ap4)
     net.addLink(ap2, ap4)
 
+    # CRUCIAL: Associations WiFi explicites stations -> APs
+    info('*** Associating stations to access points\n')
+    
+    # Calculer les distances et associer chaque station au AP le plus proche
+    stations = [sta1, sta2, sta3, sta4, sta5, sta6, sta7, sta8]
+    aps = [ap1, ap2, ap3, ap4, ap5, ap6, ap7, ap8, sta9, sta10, sta11, sta12, sta13, sta14, sta15, sta16, sta17, sta18, sta19, sta20]
+    
+    def distance(pos1, pos2):
+        x1, y1 = float(pos1.split(',')[0]), float(pos1.split(',')[1])
+        x2, y2 = float(pos2.split(',')[0]), float(pos2.split(',')[1])
+        return ((x1-x2)**2 + (y1-y2)**2)**0.5
+    
+    # Association manuelle optimisée
+    associations = [
+        (sta1, ap1),  # sta1 proche de ap1
+        (sta2, ap1),  # sta2 proche de ap1  
+        (sta3, ap3),  # sta3 proche de ap3
+        (sta4, ap7),  # sta4 proche de ap7
+        (sta5, ap8),  # sta5 proche de ap8
+        (sta6, ap5),  # sta6 proche de ap4
+        (sta7, ap7),  # sta7 proche de ap6
+        (sta8, ap4),  # sta8 proche de ap2
+        (sta9, ap2),
+        (sta10, ap5),
+        (sta11, ap8),
+        (sta12, ap3),
+        (sta13, ap6),
+        (sta14, ap8),
+        (sta15, ap6),
+        (sta16, ap1),
+        (sta17, ap6),
+        (sta18, ap5),
+        (sta19, ap8),
+        (sta20, ap7)
+    ]
     
     
     # Affichage du graphe
