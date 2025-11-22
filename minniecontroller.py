@@ -1,4 +1,5 @@
-# Simple Shortest Path First Controller in Ryu - Version corrigée
+#
+# Simple Shortest Path First Controller in Ryu
 # Copyright (C) 2020  Shih-Hao Tseng <shtseng@caltech.edu>
 # 
 #  This program is free software: you can redistribute it and/or modify
@@ -26,16 +27,16 @@ from ryu.lib import mac
 from ryu.lib.mac import haddr_to_bin
 from ryu.lib.packet import packet, ethernet, arp, ether_types
 from collections import defaultdict, Counter
+
 from ryu.topology.api import get_switch, get_link
 from ryu.app.wsgi import ControllerBase
 from ryu.topology import event, switches
 from ryu.lib.packet import ipv4
-# Pour gérer les stations WiFi
-from ryu.topology import event
+import time
 
 import networkx as nx
-import time
  
+
 
 class FlowRule:
     """Représente une règle de flux avec source, destination et port de sortie"""
@@ -139,28 +140,31 @@ class RoutingTable:
         
         return len(compressed_by_dst)
 
-class WcnController(app_manager.RyuApp):
+class SPFController(app_manager.RyuApp):
     OFP_VERSIONS = [ofproto_v1_3.OFP_VERSION]
  
     def __init__(self, *args, **kwargs):
-        super(WcnController, self).__init__(*args, **kwargs)
+        super(SPFController, self).__init__(*args, **kwargs)
         self.topology_api_app = self
-        self.net = nx.DiGraph()
+        self.net=nx.DiGraph()
         self.nodes = {}
         self.links = {}
         self.no_of_nodes = 0
         self.no_of_links = 0
-        self.i = 0
+        self.i=0
         self.arp_table = {}
         self.ip_to_datapath = {}
         self.dpid_to_datapath = {}
+
         self.routing_tables = {}
         self.original_routing_tables = {}  # Table originale
         self.compression_threshold = 80  # Seuil de compression (80% de la table)
         self.stations = set()
-        self.connected_stations = {}  # Dictionnaire pour tracker les stations
+        self.connected_stations = {}
+
+    
     def add_flow(self, datapath, src, dst, out_port):
-        """Ajouter une règle de flux IPv4 spécifique"""
+        """Ajouter une règle de flux IPv4 spécifique (utilisée par ipv4_routing)"""
         self.logger.info("Installing flow rule: SRC=%s, DST=%s, OUT_PORT=%s on DPID=%s", 
                          src, dst, out_port, datapath.id)
         
@@ -182,11 +186,12 @@ class WcnController(app_manager.RyuApp):
             match=match,
             cookie=0,
             command=ofproto.OFPFC_ADD,
-            priority=100,  
+            priority=100,  # Priorité plus élevée que la règle par défaut
             instructions=inst
         )
         
         datapath.send_msg(mod)
+
 
     def add_flow_c(self, datapath, priority, match, actions, buffer_id=None):
         """Ajouter une règle de flux au switch"""
@@ -212,7 +217,7 @@ class WcnController(app_manager.RyuApp):
         compressed_table = self.routing_tables[dpid]         # Table compressée
 
         # Compression basée sur le nombre de règles
-        if len(original_table.rules) >= 13:
+        if len(original_table.rules) >= 70:
             old_size = len(compressed_table.rules)
             # On vide la table compressée avant d'insérer les nouvelles règles
             compressed_table.rules = []
@@ -220,13 +225,14 @@ class WcnController(app_manager.RyuApp):
             compressed_table.rules = original_table.rules.copy()
             # Appliquer la compression MINNIE sur les règles copiées
             new_size = compressed_table.minnie_compress()
-            self.logger.info(
-                "COMPRESSION DÉCLENCHÉE - DPID=%s: %d -> %d règles, gain=%d règles",
-                dpid, old_size, new_size, old_size - new_size
-            )
-            
-            # Réinstaller les règles compressées sur le switch
-            self.reinstall_compressed_rules(dpid)
+            if old_size > new_size: 
+                self.logger.info(
+                    "COMPRESSION DÉCLENCHÉE - DPID=%s: %d -> %d règles, gain=%d règles",
+                    dpid, old_size, new_size, old_size - new_size
+                )
+                
+                # Réinstaller les règles compressées sur le switch
+                self.reinstall_compressed_rules(dpid)
 
     def reinstall_compressed_rules(self, dpid):
         """Réinstaller les règles compressées sur le switch"""
@@ -280,34 +286,25 @@ class WcnController(app_manager.RyuApp):
             
             self.add_flow_c(datapath, priority, match, actions)
 
-    @set_ev_cls(ofp_event.EventOFPSwitchFeatures, CONFIG_DISPATCHER)
-    def switch_features_handler(self, ev):
+
+    @set_ev_cls(ofp_event.EventOFPSwitchFeatures , CONFIG_DISPATCHER)
+    def switch_features_handler(self , ev):
         datapath = ev.msg.datapath
         ofproto = datapath.ofproto
         parser = datapath.ofproto_parser
-        
-        # Installer une règle par défaut pour envoyer au contrôleur
         match = parser.OFPMatch()
         actions = [parser.OFPActionOutput(ofproto.OFPP_CONTROLLER, ofproto.OFPCML_NO_BUFFER)]
-        inst = [parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS, actions)]
-        
-        mod = parser.OFPFlowMod(
-            datapath=datapath,
-            match=match,
-            cookie=0,
-            command=ofproto.OFPFC_ADD,
-            idle_timeout=0,
-            hard_timeout=0,
-            priority=0,  # Priorité la plus basse
-            instructions=inst
-        )
+        inst = [parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS , actions)]
+        mod = datapath.ofproto_parser.OFPFlowMod(
+            datapath=datapath, match=match, cookie=0,
+            command=ofproto.OFPFC_ADD, idle_timeout=0, hard_timeout=0, priority=0, instructions=inst)
         datapath.send_msg(mod)
+
 
         dpid = datapath.id
         self.routing_tables[dpid] = RoutingTable(dpid)
         self.original_routing_tables[dpid] = RoutingTable(dpid)  
-        self.logger.info("Switch %s connected, routing table initialized", dpid)
-
+ 
     @set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
     def _packet_in_handler(self, ev):
         msg = ev.msg
@@ -317,22 +314,23 @@ class WcnController(app_manager.RyuApp):
         if not eth_hdr:
             return
         
-        # Filtrer LLDP
+        # filters out LLDP
         if eth_hdr.ethertype == 0x88cc:
             return
 
         datapath = msg.datapath
-        dpid = datapath.id
+        dpid    = datapath.id
         ofproto = datapath.ofproto
-        parser = datapath.ofproto_parser
+        parser  = datapath.ofproto_parser
         in_port = msg.match['in_port']
 
         dst = eth_hdr.dst
         src = eth_hdr.src
 
+
         # ARP
         if eth_hdr.ethertype == 0x0806:
-            self.arp_handler(
+            self.arp_handler (
                 pkt=pkt,
                 src=src,
                 dst=dst,
@@ -343,6 +341,7 @@ class WcnController(app_manager.RyuApp):
                 in_port=in_port
             )
             return
+
 
         # IPv4 routing
         if eth_hdr.ethertype == 0x0800:
@@ -376,7 +375,8 @@ class WcnController(app_manager.RyuApp):
             )
             return
 
-    def arp_handler(self, pkt, src, dst, datapath, dpid, ofproto, parser, in_port):
+
+    def arp_handler(self,pkt,src,dst,datapath,dpid,ofproto,parser,in_port):
         arp_hdr = pkt.get_protocol(arp.arp)
         if not arp_hdr:
             return
@@ -385,6 +385,14 @@ class WcnController(app_manager.RyuApp):
         arp_dst_ip = arp_hdr.dst_ip
         eth_src = src
         eth_dst = dst
+
+        if arp_src_ip not in self.net:
+            self.net.add_node(arp_src_ip)
+            self.net.add_edge(dpid, arp_src_ip, port=in_port)
+            self.net.add_edge(arp_src_ip, dpid)
+
+            # Vérification via log
+            self.logger.info("Current edges: %s", list(self.net.edges(data=True)))
 
         # Vérification du port edge
         if self.is_edge_port(dpid, in_port):  
@@ -400,21 +408,25 @@ class WcnController(app_manager.RyuApp):
             # Mise à jour de la table : on stocke datapath + port
             self.ip_to_datapath[arp_src_ip] = (datapath, in_port)
 
-        # Topologie pour le routage
-        if arp_src_ip not in self.net:
-            self.net.add_node(arp_src_ip)
-            self.net.add_edge(dpid, arp_src_ip, port=in_port)
-            self.net.add_edge(arp_src_ip, dpid)
 
-        # Mise à jour de la table ARP
         self.arp_table[arp_src_ip] = eth_src
+        self.ip_to_datapath[arp_src_ip] = (datapath, in_port)
 
-        # Gestion ARP
+        # print(" ARP: %s (%s) -> %s (%s)" % (arp_src_ip, src, arp_dst_ip, dst))
+
+        hwtype = arp_hdr.hwtype
+        proto = arp_hdr.proto
+        hlen = arp_hdr.hlen
+        plen = arp_hdr.plen
+
         if arp_hdr.opcode == arp.ARP_REQUEST:
+            # request
+            # lookup the arp_table
             if arp_dst_ip in self.arp_table:
-                # Réponse ARP
-                eth_dst = self.arp_table[arp_dst_ip]
+                actions = [parser.OFPActionOutput(in_port)]
                 ARP_Reply = packet.Packet()
+                eth_dst = self.arp_table[arp_dst_ip]
+                # reply
                 ARP_Reply.add_protocol(ethernet.ethernet(
                     ethertype=0x0806,
                     dst=eth_src,
@@ -425,144 +437,121 @@ class WcnController(app_manager.RyuApp):
                     src_ip=arp_dst_ip,
                     dst_mac=eth_src,
                     dst_ip=arp_src_ip))
-                ARP_Reply.serialize()
 
-                actions = [parser.OFPActionOutput(in_port)]
+                ARP_Reply.serialize()
+                # send back
                 out = parser.OFPPacketOut(
                     datapath=datapath,
                     buffer_id=ofproto.OFP_NO_BUFFER,
                     in_port=ofproto.OFPP_CONTROLLER,
-                    actions=actions,
-                    data=ARP_Reply.data)
+                    actions=actions, data=ARP_Reply.data)
                 datapath.send_msg(out)
                 return True
             else:
-                # Diffuser la requête ARP
+                # need to ask the nodes
                 for sw_datapath in self.dpid_to_datapath.values():
                     if sw_datapath == datapath:
                         continue
-                    actions = [parser.OFPActionOutput(ofproto.OFPP_FLOOD)]
+                    actions = [parser.OFPActionOutput(in_port)]
                     out = parser.OFPPacketOut(
                         datapath=sw_datapath,
                         buffer_id=ofproto.OFP_NO_BUFFER,
                         in_port=ofproto.OFPP_CONTROLLER,
-                        actions=actions,
-                        data=pkt.data)
+                        actions=actions, data=pkt.data)
                     sw_datapath.send_msg(out)
-
         elif arp_hdr.opcode == arp.ARP_REPLY:
+            # it is a reply
             if arp_dst_ip in self.ip_to_datapath:
-                target_dp, target_port = self.ip_to_datapath[arp_dst_ip]
+                datapath, dst_port = self.ip_to_datapath[arp_dst_ip]
+
+                actions = [parser.OFPActionOutput(in_port)]
                 ARP_Reply = packet.Packet()
-                actions = [parser.OFPActionOutput(ofproto.OFPP_FLOOD)]
+    
+                # reply
+                ARP_Reply.add_protocol(ethernet.ethernet(
+                    ethertype=0x0806,
+                    dst=eth_dst,
+                    src=eth_src))
+                ARP_Reply.add_protocol(arp.arp(
+                    opcode=arp.ARP_REPLY,
+                    src_mac=eth_src,
+                    src_ip=arp_src_ip,
+                    dst_mac=eth_dst,
+                    dst_ip=arp_dst_ip))
+    
+                ARP_Reply.serialize()
+                # send back
                 out = parser.OFPPacketOut(
-                    datapath=target_dp,
+                    datapath=datapath,
                     buffer_id=ofproto.OFP_NO_BUFFER,
                     in_port=ofproto.OFPP_CONTROLLER,
-                    actions=actions,
-                    data=ARP_Reply.data)
-                target_dp.send_msg(out)
+                    actions=actions, data=ARP_Reply.data)
+                datapath.send_msg(out)
                 return True
-
         return False
 
-    def ipv4_routing(self, msg, src, dst, datapath, dpid, ofproto, parser, in_port):
-        if dst not in self.net:
-            self.logger.info("Destination %s not in network, flooding", dst)
-            out_port = ofproto.OFPP_FLOOD
-        else:
-            self.logger.info("Routing from %s to %s", src, dst)
-            self.logger.debug("Network nodes: %s", list(self.net.nodes))
-            self.logger.debug("Network edges: %s", list(self.net.edges))
-
+    def ipv4_routing(self,msg,src,dst,datapath,dpid,ofproto,parser,in_port):
+        if dst in self.net:
+            print("%s -> %s" % (src,dst))
+            print("nodes:")
+            print(self.net.nodes)
+            print("edges:")
+            print(self.net.edges)
             try:
-                path = nx.shortest_path(self.net, src, dst)
-                self.logger.info("Shortest path: %s", path)
-                
-                path_len = len(path)
-                
-                # Trouver l'index du DPID actuel dans le chemin
-                try:
-                    current_index = path.index(dpid)
-                except ValueError:
-                    self.logger.error("Current DPID %s not found in path", dpid)
-                    out_port = ofproto.OFPP_FLOOD
-                else:
-                    # Installer les règles sur tous les switches du chemin
-                    i = current_index
-                    while i < path_len - 1:
-                        current_node = path[i]
-                        next_node = path[i + 1]
-                        
-                        # Ignorer si le noeud actuel n'est pas un switch
-                        if current_node not in self.dpid_to_datapath:
-                            i += 1
-                            continue
-                        
-                        # Trouver le port de sortie vers le noeud suivant
-                        if self.net.has_edge(current_node, next_node):
-                            edge_data = self.net[current_node][next_node]
-                            if 'port' in edge_data:
-                                out_port_for_switch = edge_data['port']
-                                
-                                # --- AJOUT DANS LES DEUX TABLES ---
-                                if current_node not in self.original_routing_tables:
-                                    self.original_routing_tables[current_node] = RoutingTable(current_node)
-                                if current_node not in self.routing_tables:
-                                    self.routing_tables[current_node] = RoutingTable(current_node)
+                path=nx.shortest_path(self.net,src,dst)
+                print("Calculated path:", path)  # <-- affichage du chemin
 
-                                # Toujours ajouter dans original_routing_tables (historique)
-                                self.original_routing_tables[current_node].add_rule(src, dst, out_port_for_switch)
+                # install the path
+                next_index=path.index(dpid)+1
+                current_dpid=dpid
+                current_dp=datapath
+                path_len=len(path)
 
-                                # Par défaut on ajoute aussi dans routing_tables (avant compression)
-                                self.routing_tables[current_node].add_rule(src, dst, out_port_for_switch)
+                return_out_port = None
+                while next_index < path_len:
+                    if current_dp is None:
+                        continue
+    
+                    next_dpid=path[next_index]
+                    out_port=self.net[current_dpid][next_dpid]['port']
+                    if current_dpid == dpid:
+                        return_out_port = out_port
 
-                                self.logger.info("Added rule to ORIGINAL DPID=%s: %s->%s via port %s", 
-                                               current_node, src, dst, out_port_for_switch)
-                                self.logger.debug("Also added to ACTIVE DPID=%s", current_node)
-                                
-                                # Vérifier et compresser si nécessaire (contrôle basé sur original_routing_tables)
-                                self.check_and_compress_table(current_node)
-                                
-                                # Installer la règle sur le switch
-                                if current_node in self.dpid_to_datapath:
-                                    switch_datapath = self.dpid_to_datapath[current_node]
-                                    self.add_flow(
-                                        datapath=switch_datapath,
-                                        src=src,
-                                        dst=dst,
-                                        out_port=out_port_for_switch
-                                    )
-                                
-                                # Si c'est le switch d'entrée, sauvegarder le port de sortie
-                                if current_node == dpid:
-                                    out_port = out_port_for_switch
-                        
-                        i += 1
+                    out_port = self.net[current_dpid][next_dpid]['port']
+                    print(f"Installing flow on DPID {current_dpid} to next DPID {next_dpid}, out_port={out_port}")
                     
-                    # Si on n'a pas trouvé de port de sortie pour le switch d'entrée
-                    if 'out_port' not in locals():
-                        self.logger.warning("No output port found for DPID=%s, flooding", dpid)
-                        out_port = ofproto.OFPP_FLOOD
+                    self.add_flow(current_dp, src, dst, out_port)
+                    print(f"Flow added on DPID {current_dpid}")
 
+                    self.original_routing_tables[current_dpid].add_rule(src, dst, out_port)
+
+                    # Par défaut on ajoute aussi dans routing_tables (avant compression)
+                    self.routing_tables[current_dpid].add_rule(src, dst, out_port)
+
+                    
+                    # Vérifier et compresser si nécessaire (contrôle basé sur original_routing_tables)
+                    self.check_and_compress_table(current_dpid)
+                    
+                    next_index += 1
+                    current_dpid=next_dpid
+                    if current_dpid in self.dpid_to_datapath:
+                        current_dp=self.dpid_to_datapath[current_dpid]
+                    else:
+                        current_dp=None
+
+                out_port = return_out_port
             except nx.NetworkXNoPath:
-                self.logger.warning("No path found from %s to %s", src, dst)
-                out_port = ofproto.OFPP_FLOOD
-            except Exception as e:
-                self.logger.error("Error in routing: %s", str(e))
-                out_port = ofproto.OFPP_FLOOD
+                print("No path")
+                return
+        else:
+            out_port = ofproto.OFPP_FLOOD
 
-        # Envoyer le paquet
-        actions = [parser.OFPActionOutput(out_port)]
-        out = parser.OFPPacketOut(
-            datapath=datapath,
-            buffer_id=msg.buffer_id,
-            in_port=in_port,
-            actions=actions
-        )
+        actions = [datapath.ofproto_parser.OFPActionOutput(out_port)]
+        # return the packet
+        out = datapath.ofproto_parser.OFPPacketOut(
+            datapath=datapath, buffer_id=msg.buffer_id, in_port=in_port,
+            actions=actions)
         datapath.send_msg(out)
-
-
 
     @set_ev_cls(event.EventSwitchEnter)
     def switch_enter(self, ev):
@@ -571,137 +560,79 @@ class WcnController(app_manager.RyuApp):
         if dpid not in self.dpid_to_datapath:
             self.dpid_to_datapath[dpid] = datapath
         self.net.add_node(dpid)
-        self.logger.info("Switch %s entered network", dpid)
     
     @set_ev_cls(event.EventSwitchLeave)
-    def switch_leave(self, ev):
+    def switch_leave(self,ev):
         datapath = ev.switch.dp
         dpid = datapath.id
         if dpid in self.dpid_to_datapath:
             del self.dpid_to_datapath[dpid]
-        if self.net.has_node(dpid):
-            self.net.remove_node(dpid)
-        self.logger.info("Switch %s left network", dpid)
+        self.net.remove_node (dpid)
 
     @set_ev_cls(event.EventLinkAdd)
     def link_add(self, ev):
         src_port_no = ev.link.src.port_no
         src_dpid = ev.link.src.dpid
         dst_dpid = ev.link.dst.dpid
+        
         self.net.add_edge(src_dpid, dst_dpid, port=src_port_no)
-        self.links[(src_dpid, src_port_no)] = (dst_dpid, ev.link.dst.port_no)  # stocker le lien
-        self.logger.info("Link added: %s (port %s) -> %s", src_dpid, src_port_no, dst_dpid)
 
+        self.links[(src_dpid, src_port_no)] = (dst_dpid, ev.link.dst.port_no)  
+        
     def is_edge_port(self, dpid, port_no):
         # Si le port est dans self.links comme port source -> c'est inter-switch
         return (dpid, port_no) not in self.links
 
-    @set_ev_cls(event.EventHostAdd)
-    def host_join(self, ev):
-        host = ev.host
-        dpid = None
-        port_no = None
-        if hasattr(host, 'port'):
-            dpid = host.port.dpid
-            port_no = host.port.port_no
-        print(f"[JOIN] Station {host.mac} connectée sur switch DPID={dpid}, port={port_no}")
-
-    @set_ev_cls(event.EventHostDelete)
-    def host_leave(self, ev):
-        host = ev.host
-        print(f"[LEAVE] Station {host.mac} disparue")
-
-    @set_ev_cls(event.EventHostMove)
-    def host_move(self, ev):
-        host = ev.host
-        old_port = ev.port_old
-        new_port = ev.port_new
-        print(f"[MOVE] Station {host.mac} a changé de switch/port : "
-              f"{old_port.dpid}:{old_port.port_no} → {new_port.dpid}:{new_port.port_no}")
-                
     def invalidate_flows_for_host(self, host_ip):
-        """Supprimer toutes les règles contenant host_ip comme source ou destination dans TOUTES les tables"""
+        """Invalider les règles de flux contenant une IP spécifique"""
         self.logger.info("Invalidating flows for host IP %s", host_ip)
 
-        # 1️⃣ Supprimer le nœud du graphe
         if self.net.has_node(host_ip):
-            print("Avant suppression:", list(self.net.nodes), list(self.net.edges))
             self.net.remove_node(host_ip)
-            print("Après suppression:", list(self.net.nodes), list(self.net.edges))
             print(f"Nœud {host_ip} supprimé du graphe")
 
-        # 2️⃣ Parcourir toutes les tables de routage (COMPRESSÉES ET ORIGINALES)
-        for dpid in list(self.routing_tables.keys()):
-            rules_to_remove_from_switch = []
-            
-            # ===== TABLE COMPRESSÉE =====
-            if dpid in self.routing_tables:
-                table = self.routing_tables[dpid]
-                rules_to_remove = [rule for rule in table.rules if rule.src == host_ip or rule.dst == host_ip]
-                
-                # Supprimer les règles de la table compressée
-                table.rules = [rule for rule in table.rules if rule not in rules_to_remove]
-                rules_to_remove_from_switch.extend(rules_to_remove)
-                
-                self.logger.info("Removed %d rules from compressed table on DPID=%s", 
-                            len(rules_to_remove), dpid)
-            
-            # ===== TABLE ORIGINALE =====
-            if dpid in self.original_routing_tables:
-                orig_table = self.original_routing_tables[dpid]
-                orig_rules_to_remove = [rule for rule in orig_table.rules if rule.src == host_ip or rule.dst == host_ip]
-                
-                # Supprimer les règles de la table originale
-                orig_table.rules = [rule for rule in orig_table.rules if rule not in orig_rules_to_remove]
-                
-                # Ajouter à la liste pour suppression du switch (éviter les doublons)
-                for orig_rule in orig_rules_to_remove:
-                    # Vérifier si une règle similaire n'est pas déjà dans la liste
-                    if not any(r.src == orig_rule.src and r.dst == orig_rule.dst 
-                            for r in rules_to_remove_from_switch):
-                        rules_to_remove_from_switch.append(orig_rule)
-                
-                self.logger.info("Removed %d rules from original table on DPID=%s", 
-                            len(orig_rules_to_remove), dpid)
+        # Supprimer des original_tables et routing_tables
+        for dpid in list(self.original_routing_tables.keys()):
+            table = self.original_routing_tables[dpid]
+            rules_to_remove = []
+            for i, rule in enumerate(table.rules):
+                if rule.src == host_ip or rule.dst == host_ip:
+                    rules_to_remove.append(i)
+                    self.logger.info("Marking rule for removal from ORIGINAL DPID=%s: %s", dpid, rule)
 
-            # 3️⃣ Supprimer les règles du switch physique
-            if dpid in self.dpid_to_datapath and rules_to_remove_from_switch:
+            for i in reversed(rules_to_remove):
+                del table.rules[i]
+
+        for dpid in list(self.routing_tables.keys()):
+            table = self.routing_tables[dpid]
+            rules_to_remove = []
+            for i, rule in enumerate(table.rules):
+                if rule.src == host_ip or rule.dst == host_ip:
+                    rules_to_remove.append(i)
+                    self.logger.info("Marking rule for removal from ACTIVE DPID=%s: %s", dpid, rule)
+
+            for i in reversed(rules_to_remove):
+                del table.rules[i]
+            
+            # Supprimer les règles du switch physique
+            if dpid in self.dpid_to_datapath and rules_to_remove:
                 datapath = self.dpid_to_datapath[dpid]
                 parser = datapath.ofproto_parser
                 ofproto = datapath.ofproto
-
-                # Méthode optimisée : supprimer par source et destination globalement
-                # Supprimer toutes les règles avec host_ip comme source
-                match_src = parser.OFPMatch(eth_type=0x0800, ipv4_src=host_ip)
-                mod_src = parser.OFPFlowMod(
-                    datapath=datapath,
-                    command=ofproto.OFPFC_DELETE,
-                    out_port=ofproto.OFPP_ANY,
-                    out_group=ofproto.OFPG_ANY,
-                    match=match_src
-                )
-                datapath.send_msg(mod_src)
-                self.logger.info("Deleted all flows with SRC=%s on DPID=%s", host_ip, dpid)
                 
-                # Supprimer toutes les règles avec host_ip comme destination
+                # Supprimer les règles contenant cette IP
+                match_src = parser.OFPMatch(eth_type=0x0800, ipv4_src=host_ip)
                 match_dst = parser.OFPMatch(eth_type=0x0800, ipv4_dst=host_ip)
-                mod_dst = parser.OFPFlowMod(
-                    datapath=datapath,
-                    command=ofproto.OFPFC_DELETE,
-                    out_port=ofproto.OFPP_ANY,
-                    out_group=ofproto.OFPG_ANY,
-                    match=match_dst
-                )
-                datapath.send_msg(mod_dst)
-                self.logger.info("Deleted all flows with DST=%s on DPID=%s", host_ip, dpid)
-
-        # 4️⃣ Nettoyer les autres structures de données
-        if host_ip in self.arp_table:
-            del self.arp_table[host_ip]
-            self.logger.info("Removed %s from ARP table", host_ip)
-        
-        if host_ip in self.ip_to_datapath:
-            del self.ip_to_datapath[host_ip]
-            self.logger.info("Removed %s from IP-to-datapath mapping", host_ip)
-
-        self.logger.info("Finished invalidating flows for host %s", host_ip)
+                
+                for match in [match_src, match_dst]:
+                    mod = parser.OFPFlowMod(
+                        datapath=datapath,
+                        command=ofproto.OFPFC_DELETE,
+                        out_port=ofproto.OFPP_ANY,
+                        out_group=ofproto.OFPG_ANY,
+                        match=match
+                    )
+                    datapath.send_msg(mod)
+                
+                self.logger.info("Removed %d flow rules from switch DPID=%s", 
+                               len(rules_to_remove), dpid)
